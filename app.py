@@ -93,7 +93,7 @@ def ingest_into_vectordb(split_docs):
 # Function to get the conversation chain
 def get_conversation_chain(retriever):
     # Initialize Groq LLM
-    client = Groq(api_key="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")
+    client = Groq(api_key="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")
 
     # Define a function to use the Groq LLM for creating completions
     # Define the prompts
