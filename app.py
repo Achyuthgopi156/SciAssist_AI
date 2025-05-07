@@ -58,20 +58,35 @@ button_style = """
         background-color: #0056b3;
     }
 </style>
-"""
 
-# Custom Groq LLM wrapper
 class GroqLLM(BaseChatModel):
     def __init__(self, api_key: str, model_name: str = "llama3-70b-8192"):
         super().__init__()
         self.client = Groq(api_key=api_key)
         self.model_name = model_name
         
+    @property
+    def _llm_type(self) -> str:
+        """Return type of LLM."""
+        return "groq"
+        
     def _generate(self, messages: List[Dict[str, Any]], **kwargs):
         try:
+            # Convert LangChain messages to Groq format
+            groq_messages = []
+            for msg in messages:
+                if isinstance(msg, SystemMessage):
+                    groq_messages.append({"role": "system", "content": msg.content})
+                elif isinstance(msg, HumanMessage):
+                    groq_messages.append({"role": "user", "content": msg.content})
+                elif isinstance(msg, AIMessage):
+                    groq_messages.append({"role": "assistant", "content": msg.content})
+                elif isinstance(msg, dict):
+                    groq_messages.append(msg)
+            
             completion = self.client.chat.completions.create(
                 model=self.model_name,
-                messages=messages,
+                messages=groq_messages,
                 temperature=kwargs.get("temperature", 0.7),
                 max_tokens=kwargs.get("max_tokens", 1024),
                 top_p=kwargs.get("top_p", 1),
@@ -85,6 +100,7 @@ class GroqLLM(BaseChatModel):
             
     async def _agenerate(self, messages: List[Dict[str, Any]], **kwargs):
         return self._generate(messages, **kwargs)
+
 
 # Function to prepare and split documents
 def prepare_and_split_docs(pdf_directory):
