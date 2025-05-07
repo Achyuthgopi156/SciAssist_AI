@@ -67,7 +67,6 @@ class GroqLLM(BaseChatModel):
         
     @property
     def _llm_type(self) -> str:
-        """Return type of LLM."""
         return "groq"
         
     def _generate(self, messages: List[Dict[str, Any]], **kwargs):
