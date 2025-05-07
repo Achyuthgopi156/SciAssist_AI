@@ -1,21 +1,22 @@
 import streamlit as st
-from langchain.document_loaders import DirectoryLoader, PyPDFLoader
+from langchain_community.document_loaders import DirectoryLoader, PyPDFLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_community.llms import Ollama
-from langchain.vectorstores import FAISS
-from langchain.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_community.vectorstores import FAISS
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.runnables.history import RunnableWithMessageHistory
 from langchain_community.chat_message_histories import ChatMessageHistory
 from langchain.chains import create_retrieval_chain
 from langchain.chains.combine_documents import create_stuff_documents_chain
 from sentence_transformers import SentenceTransformer, util
-#from htmlTemplate import css, bot_template, user_template
 from langchain_core.chat_history import BaseChatMessageHistory
 from langchain.chains import create_history_aware_retriever
-from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_community.embeddings import HuggingFaceEmbeddings
 from groq import Groq
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
+from langchain_core.language_models import BaseChatModel
+from typing import List, Dict, Any
 
+# HTML templates (unchanged)
 bot_template = '''
 <div style="display: flex; align-items: center; margin-bottom: 10px;">
     <div style="flex-shrink: 0; margin-right: 10px;">
@@ -59,17 +60,39 @@ button_style = """
 </style>
 """
 
-
+# Custom Groq LLM wrapper
+class GroqLLM(BaseChatModel):
+    def __init__(self, api_key: str, model_name: str = "llama3-70b-8192"):
+        super().__init__()
+        self.client = Groq(api_key=api_key)
+        self.model_name = model_name
+        
+    def _generate(self, messages: List[Dict[str, Any]], **kwargs):
+        try:
+            completion = self.client.chat.completions.create(
+                model=self.model_name,
+                messages=messages,
+                temperature=kwargs.get("temperature", 0.7),
+                max_tokens=kwargs.get("max_tokens", 1024),
+                top_p=kwargs.get("top_p", 1),
+                stream=False,
+                stop=kwargs.get("stop", None),
+            )
+            return completion.choices[0].message.content
+        except Exception as e:
+            st.error(f"Error calling Groq API: {str(e)}")
+            raise
+            
+    async def _agenerate(self, messages: List[Dict[str, Any]], **kwargs):
+        return self._generate(messages, **kwargs)
 
 # Function to prepare and split documents
 def prepare_and_split_docs(pdf_directory):
     split_docs = []
     for pdf in pdf_directory:
-
         with open(pdf.name, "wb") as f:
             f.write(pdf.getbuffer())
         
-        # Use PyPDFLoader with the saved file path
         loader = PyPDFLoader(pdf.name)
         documents = loader.load()
         splitter = RecursiveCharacterTextSplitter.from_tiktoken_encoder(
@@ -84,7 +107,6 @@ def prepare_and_split_docs(pdf_directory):
 # Function to ingest documents into the vector database
 def ingest_into_vectordb(split_docs):
     embeddings = HuggingFaceEmbeddings(model_name='BAAI/bge-small-en-v1.5')
-    
     db = FAISS.from_documents(split_docs, embeddings)
     DB_FAISS_PATH = 'vectorstore/db_faiss'
     db.save_local(DB_FAISS_PATH)
@@ -93,65 +115,13 @@ def ingest_into_vectordb(split_docs):
 # Function to get the conversation chain
 def get_conversation_chain(retriever):
     # Initialize Groq LLM
-    client = Groq(api_key="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")
-
-    # Define a function to use the Groq LLM for creating completions
-    # Define the prompts
-    def groq_completion(messages, temperature=1, max_tokens=1024, top_p=1, stream=False, stop=None):
-    # Validate and convert messages
-        serialized_messages = []
-        for msg in messages:
-            # Standardize role values
-            if isinstance(msg, SystemMessage):
-                serialized_messages.append({"role": "system", "content": msg.content})
-            elif isinstance(msg, HumanMessage):
-                serialized_messages.append({"role": "user", "content": msg.content})
-            elif isinstance(msg, AIMessage):
-                serialized_messages.append({"role": "assistant", "content": msg.content})
-            elif isinstance(msg, dict):
-                # Ensure role is valid
-                role = msg.get('role', '').lower()
-                if role not in ['system', 'user', 'assistant']:
-                    # Default to 'user' if role is invalid
-                    role = 'user'
-                serialized_messages.append({
-                    'role': role, 
-                    'content': msg.get('content', '')
-                })
-            else:
-                # Fallback for unexpected types
-                print(f"Unexpected message type: {type(msg)}")
-                serialized_messages.append({
-                    'role': 'user', 
-                    'content': str(msg)
-                })
-        
-        # Debug print to check serialized messages
-        print("Serialized messages:", serialized_messages)
-
-        try:
-            # Call Groq API
-            completion = client.chat.completions.create(
-                model="llama-3.1-70b-versatile",
-                messages=serialized_messages,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                top_p=top_p,
-                stream=stream,
-                stop=stop,
-            )
-            return completion.choices[0].message.content
-        except Exception as e:
-            # Detailed error logging
-            print(f"Error in Groq API call: {e}")
-            print("Serialized messages:", serialized_messages)
-            raise
-    contextualize_q_system_prompt = (
-    "Given the chat history and the latest user question, "
-    "provide a response that directly addresses the user's query based on the provided documents. "
-    "Do not rephrase the question or ask follow-up questions."
-)
-
+    llm = GroqLLM(api_key="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")
+    
+    contextualize_q_system_prompt = """Given a chat history and the latest user question \
+    which might reference context in the chat history, formulate a standalone question \
+    which can be understood without the chat history. Do NOT answer the question, \
+    just reformulate it if needed and otherwise return it as is."""
+    
     contextualize_q_prompt = ChatPromptTemplate.from_messages(
         [
             ("system", contextualize_q_system_prompt),
@@ -160,48 +130,27 @@ def get_conversation_chain(retriever):
         ]
     )
 
-    # Create the history-aware retriever using the Groq LLM
     history_aware_retriever = create_history_aware_retriever(
-        groq_completion, retriever, contextualize_q_prompt
+        llm, retriever, contextualize_q_prompt
     )
 
     ### Answer question ###
-    system_prompt = (
-        """You are an expert assistant tasked with answering questions based only on the provided context. Do not use any external knowledge or make up answers. If the context does not contain the required information, clearly state that the answer is not available in the provided context.
-
-Follow this response structure for consistency:
-
-*Question:* Restate the input question for clarity.
-
-*Answer:* Provide a step-by-step explanation or directly state the answer using only the given context. Avoid adding any unsupported information.
-
-*Evidence:* Highlight the specific part(s) of the context you used to derive the answer.
-
-*Disclaimer:* If the answer cannot be derived from the context, explicitly state: "The required information is not available in the provided context."
+    qa_system_prompt = """You are an assistant for question-answering tasks. \
+    Use the following pieces of retrieved context to answer the question. \
+    If you don't know the answer, just say that you don't know. \
+    Use three sentences maximum and keep the answer concise.\
     
-Here is the context for this task:
-<context>
-{context}
-</context>
-
-Now, answer the following question:
-
-Question:
-"""
-    )
-
+    {context}"""
+    
     qa_prompt = ChatPromptTemplate.from_messages(
         [
-            ("system", system_prompt),
+            ("system", qa_system_prompt),
             MessagesPlaceholder("chat_history"),
             ("human", "{input}"),
         ]
     )
 
-    # Create the question-answer chain
-    question_answer_chain = create_stuff_documents_chain(groq_completion, qa_prompt)
-
-    # Combine the retriever and QA chain
+    question_answer_chain = create_stuff_documents_chain(llm, qa_prompt)
     rag_chain = create_retrieval_chain(history_aware_retriever, question_answer_chain)
 
     ### Statefully manage chat history ###
@@ -222,99 +171,103 @@ Question:
 
     return conversational_rag_chain
 
-
 def calculate_similarity_score(answer: str, context_docs: list) -> float:
     model = SentenceTransformer("BAAI/bge-small-en-v1.5")
-    context_docs = [doc.page_content for doc in context_docs]
-    # Encode the answer and context documents
+    context_texts = [doc.page_content for doc in context_docs]
     answer_embedding = model.encode(answer, convert_to_tensor=True)
-    context_embeddings = model.encode(context_docs, convert_to_tensor=True)
-
-    # Calculate cosine similarities
+    context_embeddings = model.encode(context_texts, convert_to_tensor=True)
     similarities = util.pytorch_cos_sim(answer_embedding, context_embeddings)
+    return similarities.max().item()
 
-    # Return the maximum similarity score from the context documents
-    max_score = similarities.max().item() 
-    return max_score
-
+# Initialize Streamlit app
 st.title("Sciassist :books:")
 
-# Sidebar for file upload
-uploaded_files = st.sidebar.file_uploader("Upload PDF Documents", type=["pdf"], accept_multiple_files=True)
-
-if uploaded_files:
-    if st.sidebar.button("Process PDFs"):
-        split_docs = prepare_and_split_docs(uploaded_files)
-        vector_db = ingest_into_vectordb(split_docs)
-        retriever = vector_db.as_retriever()
-        st.sidebar.success("Documents processed and vector database created!")
-
-        # Initialize the conversation chain
-        conversational_chain = get_conversation_chain(retriever)
-        st.session_state.conversational_chain = conversational_chain
-
+# Initialize session state
 if 'chat_history' not in st.session_state:
     st.session_state.chat_history = []
+if 'conversational_chain' not in st.session_state:
+    st.session_state.conversational_chain = None
 if 'show_docs' not in st.session_state:
     st.session_state.show_docs = {}
-
 if 'similarity_scores' not in st.session_state:
     st.session_state.similarity_scores = {}
 
-# Function to toggle the document visibility
-def toggle_docs(index):
-    st.session_state.show_docs[index] = not st.session_state.show_docs.get(index, False)
+# Sidebar for file upload
+uploaded_files = st.sidebar.file_uploader(
+    "Upload PDF Documents", 
+    type=["pdf"], 
+    accept_multiple_files=True
+)
 
-# Chat input
-user_input = st.text_input("Ask a question about the documents:")
+if uploaded_files:
+    if st.sidebar.button("Process PDFs"):
+        with st.spinner("Processing documents..."):
+            try:
+                split_docs = prepare_and_split_docs(uploaded_files)
+                vector_db = ingest_into_vectordb(split_docs)
+                retriever = vector_db.as_retriever()
+                st.session_state.conversational_chain = get_conversation_chain(retriever)
+                st.sidebar.success("Documents processed successfully!")
+            except Exception as e:
+                st.sidebar.error(f"Error processing documents: {str(e)}")
 
-if st.button("Submit"):
-    st.markdown(button_style, unsafe_allow_html=True)
-    if user_input and 'conversational_chain' in st.session_state:
-        session_id = "abc123"  # Static session ID for this demo; you can make it dynamic if needed
-        conversational_chain = st.session_state.conversational_chain
-        response = conversational_chain.invoke({"input": user_input}, config={"configurable": {"session_id": session_id}})
-        context_docs = response.get('context', [])
-        st.session_state.chat_history.append({"user": user_input, "bot": response['answer'],  "context_docs": context_docs})
+# Chat interface
+user_input = st.chat_input("Ask a question about the documents:")
+
+if user_input and st.session_state.conversational_chain:
+    with st.spinner("Thinking..."):
+        try:
+            session_id = "default_session"  # Can be made dynamic if needed
+            response = st.session_state.conversational_chain.invoke(
+                {"input": user_input},
+                config={"configurable": {"session_id": session_id}}
+            )
+            
+            st.session_state.chat_history.append({
+                "user": user_input,
+                "bot": response['answer'],
+                "context_docs": response.get('context', [])
+            })
+        except Exception as e:
+            st.error(f"Error generating response: {str(e)}")
 
 # Display chat history
-if st.session_state.chat_history:
-    for index, message in enumerate(st.session_state.chat_history):
-        # Render the user message using the template
-        st.markdown(user_template.format(msg=message['user']), unsafe_allow_html=True)
-        
-        # Render the bot message using the bot template
-        st.markdown(bot_template.format(msg=message['bot']), unsafe_allow_html=True)
-
-        # Initialize session state for each message
-        if f"show_docs_{index}" not in st.session_state:
-            st.session_state[f"show_docs_{index}"] = False
-        if f"similarity_score_{index}" not in st.session_state:
-            st.session_state[f"similarity_score_{index}"] = None
-
-        # Layout for the buttons in a single row (horizontal alignment)
-        cols = st.columns([1, 1])  # Create two equal columns for buttons
-
-        # Render "Show Source Docs" button
-        with cols[0]:
-            if st.button(f"Show/Hide Source Docs", key=f"toggle_{index}"):
-                # Toggle the visibility of source documents for this message
-                st.session_state[f"show_docs_{index}"] = not st.session_state[f"show_docs_{index}"]
-
-        # Render "Answer Relevancy" button
-        with cols[1]:
-            if st.button(f"Calculate Answer Relevancy", key=f"relevancy_{index}"):
-                if st.session_state[f"similarity_score_{index}"] is None:
-                    score = calculate_similarity_score(message['bot'], message['context_docs'])
-                    st.session_state[f"similarity_score_{index}"] = score
-
-        # Check if source documents should be shown
-        if st.session_state[f"show_docs_{index}"]:
-            with st.expander("Source Documents"):
-                for doc in message.get('context_docs', []):
-                    st.write(f"Source: {doc.metadata['source']}")
-                    st.write(doc.page_content)
-
-        # Display similarity score if available
-        if st.session_state[f"similarity_score_{index}"] is not None:
-            st.write(f"Similarity Score: {st.session_state[f'similarity_score_{index}']:.2f}")
+for index, message in enumerate(st.session_state.chat_history):
+    # User message
+    st.markdown(user_template.format(msg=message["user"]), unsafe_allow_html=True)
+    
+    # Bot message
+    st.markdown(bot_template.format(msg=message["bot"]), unsafe_allow_html=True)
+    
+    # Buttons
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        if st.button(f"Show/Hide Source Docs {index+1}", key=f"toggle_{index}"):
+            st.session_state.show_docs[index] = not st.session_state.show_docs.get(index, False)
+    
+    with col2:
+        if st.button(f"Calculate Relevancy {index+1}", key=f"relevancy_{index}"):
+            if index not in st.session_state.similarity_scores:
+                try:
+                    score = calculate_similarity_score(
+                        message['bot'], 
+                        message['context_docs']
+                    )
+                    st.session_state.similarity_scores[index] = score
+                except Exception as e:
+                    st.error(f"Error calculating similarity: {str(e)}")
+    
+    # Show documents if toggled
+    if st.session_state.show_docs.get(index, False):
+        with st.expander(f"Source Documents for Q&A {index+1}"):
+            for doc in message.get('context_docs', []):
+                st.write(f"**Source:** {doc.metadata.get('source', 'Unknown')}")
+                st.write(doc.page_content)
+                st.divider()
+    
+    # Show similarity score if calculated
+    if index in st.session_state.similarity_scores:
+        st.write(f"**Answer Relevancy Score:** {st.session_state.similarity_scores[index]:.2f}")
+    
+    st.divider()
