@@ -63,6 +63,7 @@ button_style = """
 
 class GroqLLM(BaseChatModel):
     client: Any = None
+    model_name: str = "llama3-70b-8192"
     
     def __init__(self, api_key: str, model_name: str = "llama3-70b-8192"):
         super().__init__()
