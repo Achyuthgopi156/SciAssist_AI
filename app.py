@@ -16,7 +16,7 @@ from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 from langchain_core.language_models import BaseChatModel
 from typing import List, Dict, Any
 
-# HTML templates (unchanged)
+# HTML templates
 bot_template = '''
 <div style="display: flex; align-items: center; margin-bottom: 10px;">
     <div style="flex-shrink: 0; margin-right: 10px;">
@@ -58,6 +58,7 @@ button_style = """
         background-color: #0056b3;
     }
 </style>
+"""
 
 class GroqLLM(BaseChatModel):
     def __init__(self, api_key: str, model_name: str = "llama3-70b-8192"):
@@ -71,7 +72,6 @@ class GroqLLM(BaseChatModel):
         
     def _generate(self, messages: List[Dict[str, Any]], **kwargs):
         try:
-            # Convert LangChain messages to Groq format
             groq_messages = []
             for msg in messages:
                 if isinstance(msg, SystemMessage):
@@ -100,8 +100,6 @@ class GroqLLM(BaseChatModel):
     async def _agenerate(self, messages: List[Dict[str, Any]], **kwargs):
         return self._generate(messages, **kwargs)
 
-
-# Function to prepare and split documents
 def prepare_and_split_docs(pdf_directory):
     split_docs = []
     for pdf in pdf_directory:
@@ -119,7 +117,6 @@ def prepare_and_split_docs(pdf_directory):
         split_docs.extend(splitter.split_documents(documents))
     return split_docs
 
-# Function to ingest documents into the vector database
 def ingest_into_vectordb(split_docs):
     embeddings = HuggingFaceEmbeddings(model_name='BAAI/bge-small-en-v1.5')
     db = FAISS.from_documents(split_docs, embeddings)
@@ -127,9 +124,7 @@ def ingest_into_vectordb(split_docs):
     db.save_local(DB_FAISS_PATH)
     return db
 
-# Function to get the conversation chain
 def get_conversation_chain(retriever):
-    # Initialize Groq LLM
     llm = GroqLLM(api_key="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")
     
     contextualize_q_system_prompt = """Given a chat history and the latest user question \
@@ -137,38 +132,32 @@ def get_conversation_chain(retriever):
     which can be understood without the chat history. Do NOT answer the question, \
     just reformulate it if needed and otherwise return it as is."""
     
-    contextualize_q_prompt = ChatPromptTemplate.from_messages(
-        [
-            ("system", contextualize_q_system_prompt),
-            MessagesPlaceholder("chat_history"),
-            ("human", "{input}"),
-        ]
-    )
+    contextualize_q_prompt = ChatPromptTemplate.from_messages([
+        ("system", contextualize_q_system_prompt),
+        MessagesPlaceholder("chat_history"),
+        ("human", "{input}"),
+    ])
 
     history_aware_retriever = create_history_aware_retriever(
         llm, retriever, contextualize_q_prompt
     )
 
-    ### Answer question ###
     qa_system_prompt = """You are an assistant for question-answering tasks. \
     Use the following pieces of retrieved context to answer the question. \
     If you don't know the answer, just say that you don't know. \
     Use three sentences maximum and keep the answer concise.\
     
-    {context}
+    {context}"""
     
-    qa_prompt = ChatPromptTemplate.from_messages(
-        [
-            ("system", qa_system_prompt),
-            MessagesPlaceholder("chat_history"),
-            ("human", "{input}"),
-        ]
-    )
+    qa_prompt = ChatPromptTemplate.from_messages([
+        ("system", qa_system_prompt),
+        MessagesPlaceholder("chat_history"),
+        ("human", "{input}"),
+    ])
 
     question_answer_chain = create_stuff_documents_chain(llm, qa_prompt)
     rag_chain = create_retrieval_chain(history_aware_retriever, question_answer_chain)
 
-    ### Statefully manage chat history ###
     store = {}
 
     def get_session_history(session_id: str) -> BaseChatMessageHistory:
@@ -232,7 +221,7 @@ user_input = st.chat_input("Ask a question about the documents:")
 if user_input and st.session_state.conversational_chain:
     with st.spinner("Thinking..."):
         try:
-            session_id = "default_session"  # Can be made dynamic if needed
+            session_id = "default_session"
             response = st.session_state.conversational_chain.invoke(
                 {"input": user_input},
                 config={"configurable": {"session_id": session_id}}
@@ -248,13 +237,9 @@ if user_input and st.session_state.conversational_chain:
 
 # Display chat history
 for index, message in enumerate(st.session_state.chat_history):
-    # User message
     st.markdown(user_template.format(msg=message["user"]), unsafe_allow_html=True)
-    
-    # Bot message
     st.markdown(bot_template.format(msg=message["bot"]), unsafe_allow_html=True)
     
-    # Buttons
     col1, col2 = st.columns(2)
     
     with col1:
@@ -273,7 +258,6 @@ for index, message in enumerate(st.session_state.chat_history):
                 except Exception as e:
                     st.error(f"Error calculating similarity: {str(e)}")
     
-    # Show documents if toggled
     if st.session_state.show_docs.get(index, False):
         with st.expander(f"Source Documents for Q&A {index+1}"):
             for doc in message.get('context_docs', []):
@@ -281,7 +265,6 @@ for index, message in enumerate(st.session_state.chat_history):
                 st.write(doc.page_content)
                 st.divider()
     
-    # Show similarity score if calculated
     if index in st.session_state.similarity_scores:
         st.write(f"**Answer Relevancy Score:** {st.session_state.similarity_scores[index]:.2f}")
     
