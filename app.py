@@ -14,7 +14,8 @@ from langchain_community.embeddings import HuggingFaceEmbeddings
 from groq import Groq
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 from langchain_core.language_models import BaseChatModel
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
+from langchain_core.outputs import ChatResult, ChatGeneration
 
 # HTML templates
 bot_template = '''
@@ -61,6 +62,8 @@ button_style = """
 """
 
 class GroqLLM(BaseChatModel):
+    client: Any = None
+    
     def __init__(self, api_key: str, model_name: str = "llama3-70b-8192"):
         super().__init__()
         self.client = Groq(api_key=api_key)
@@ -70,7 +73,12 @@ class GroqLLM(BaseChatModel):
     def _llm_type(self) -> str:
         return "groq"
         
-    def _generate(self, messages: List[Dict[str, Any]], **kwargs):
+    def _generate(
+        self,
+        messages: List[Dict[str, Any]],
+        stop: Optional[List[str]] = None,
+        **kwargs: Any,
+    ) -> ChatResult:
         try:
             groq_messages = []
             for msg in messages:
@@ -90,15 +98,25 @@ class GroqLLM(BaseChatModel):
                 max_tokens=kwargs.get("max_tokens", 1024),
                 top_p=kwargs.get("top_p", 1),
                 stream=False,
-                stop=kwargs.get("stop", None),
+                stop=stop,
             )
-            return completion.choices[0].message.content
+            
+            message = completion.choices[0].message
+            generation = ChatGeneration(
+                message=AIMessage(content=message.content)
+            )
+            return ChatResult(generations=[generation])
         except Exception as e:
             st.error(f"Error calling Groq API: {str(e)}")
             raise
             
-    async def _agenerate(self, messages: List[Dict[str, Any]], **kwargs):
-        return self._generate(messages, **kwargs)
+    async def _agenerate(
+        self,
+        messages: List[Dict[str, Any]],
+        stop: Optional[List[str]] = None,
+        **kwargs: Any,
+    ) -> ChatResult:
+        return self._generate(messages, stop=stop, **kwargs)
 
 def prepare_and_split_docs(pdf_directory):
     split_docs = []
